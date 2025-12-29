@@ -475,6 +475,370 @@ async def _get_server_ip() -> str:
 
 ---
 
+## Multi-Host / LXC Deployment
+
+When deploying StackWiz on a separate host (LXC container, VM, or different server), you need to understand the network topology and configure accordingly.
+
+### Network Architecture Options
+
+#### Option 1: Standalone Mode (No Traefik Integration)
+
+If your LXC doesn't have Traefik, modify templates to expose ports directly:
+
+```yaml
+# Custom template without Traefik
+services:
+  myapp:
+    image: nginx:alpine
+    container_name: myapp
+    ports:
+      - "8080:80"  # Direct port exposure
+    # No traefik labels needed
+    # No external network needed
+
+networks:
+  default:
+    driver: bridge
+```
+
+**Environment setup:**
+```bash
+# Create a simple bridge network instead
+docker network create stackwiz_default
+
+# Set environment
+export STACKWIZ_DOCKER_NETWORK=stackwiz_default
+```
+
+#### Option 2: Remote Traefik Integration
+
+If Traefik runs on a different host (e.g., main infrastructure server), you have two options:
+
+**A. Use Traefik's Docker Socket Proxy (Recommended for security)**
+```
++-------------------+          +-------------------+
+|   LXC Container   |          |   Main Server     |
+|                   |          |                   |
+|  StackWiz MCP     |   API    |   Traefik         |
+|  Docker Engine    | -------> |   (socket proxy)  |
+|  Services         |          |   SSL Termination |
++-------------------+          +-------------------+
+```
+
+**B. Direct Docker Network Connection (Same network segment)**
+If both hosts can share a Docker network (overlay network with Swarm, or same bridge):
+```bash
+# On LXC: Join the remote Traefik network
+docker network create --driver overlay traefik_proxy
+# Or connect to existing
+docker network connect traefik_proxy container_name
+```
+
+#### Option 3: Port Forwarding with Local Traefik
+
+Run a local Traefik instance on the LXC that proxies to services:
+
+```bash
+# Install Traefik on LXC
+mkdir -p /home/user/traefik
+cat > /home/user/traefik/docker-compose.yml << 'EOF'
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=your@email.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+    networks:
+      - traefik_proxy
+
+networks:
+  traefik_proxy:
+    external: true
+EOF
+
+docker network create traefik_proxy
+docker compose up -d
+```
+
+### Port Forwarding (Proxmox/Hypervisor to LXC)
+
+If your LXC is behind NAT (common in Proxmox), you need port forwarding for external access.
+
+#### Method 1: IPTables Rules (Temporary)
+
+On the **Proxmox host** (or hypervisor):
+
+```bash
+# Variables
+LXC_IP="10.0.0.100"        # Your LXC's internal IP
+EXTERNAL_PORT="8443"        # Port exposed externally
+INTERNAL_PORT="443"         # Port inside LXC
+
+# Forward HTTPS traffic
+iptables -t nat -A PREROUTING -p tcp --dport $EXTERNAL_PORT -j DNAT --to-destination $LXC_IP:$INTERNAL_PORT
+iptables -A FORWARD -p tcp -d $LXC_IP --dport $INTERNAL_PORT -j ACCEPT
+
+# Enable masquerading for return traffic
+iptables -t nat -A POSTROUTING -j MASQUERADE
+
+# Verify
+iptables -t nat -L PREROUTING -n -v
+```
+
+#### Method 2: Persistent Configuration (Recommended)
+
+Add to `/etc/network/interfaces` on Proxmox host:
+
+```bash
+auto vmbr0
+iface vmbr0 inet static
+    address 192.168.1.10/24
+    gateway 192.168.1.1
+    bridge-ports eno1
+    bridge-stp off
+    bridge-fd 0
+
+    # Port forwarding to LXC
+    # HTTP
+    post-up   iptables -t nat -A PREROUTING -i vmbr0 -p tcp --dport 80 -j DNAT --to 10.0.0.100:80
+    post-down iptables -t nat -D PREROUTING -i vmbr0 -p tcp --dport 80 -j DNAT --to 10.0.0.100:80
+
+    # HTTPS
+    post-up   iptables -t nat -A PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to 10.0.0.100:443
+    post-down iptables -t nat -D PREROUTING -i vmbr0 -p tcp --dport 443 -j DNAT --to 10.0.0.100:443
+
+    # Allow forwarded traffic
+    post-up   iptables -A FORWARD -p tcp -d 10.0.0.100 -j ACCEPT
+    post-down iptables -D FORWARD -p tcp -d 10.0.0.100 -j ACCEPT
+```
+
+Then apply: `systemctl restart networking`
+
+#### Method 3: Using Non-Standard Ports
+
+If ports 80/443 are used by main host, use alternative ports:
+
+```bash
+# Forward external 8080 -> LXC 80
+iptables -t nat -A PREROUTING -p tcp --dport 8080 -j DNAT --to-destination 10.0.0.100:80
+
+# Forward external 8443 -> LXC 443
+iptables -t nat -A PREROUTING -p tcp --dport 8443 -j DNAT --to-destination 10.0.0.100:443
+```
+
+### DNS Considerations for Multi-Host
+
+When StackWiz runs on a different host, DNS records need special consideration:
+
+#### Problem: Auto-IP Detection Returns Wrong IP
+
+The `create_dns_record` tool with `value="AUTO"` detects the **LXC's public IP**, which might be:
+- The hypervisor's IP (if NAT'd)
+- An internal IP (if private network)
+- Wrong for your routing setup
+
+#### Solutions:
+
+**1. Specify IP Explicitly:**
+```python
+# Instead of AUTO, provide the correct IP
+create_dns_record(
+    subdomain="myapp",
+    type="A",
+    value="203.0.113.50",  # Your actual public IP
+    proxied=True
+)
+```
+
+**2. Set Default in Environment:**
+```bash
+# Force a specific IP for all DNS records
+export STACKWIZ_PUBLIC_IP="203.0.113.50"
+```
+
+**3. Point to Main Infrastructure:**
+If main server handles routing, point DNS there:
+```bash
+# Create CNAME to main server instead of A record
+cloudflare-dns create CNAME myapp main.yourdomain.com
+```
+
+**4. Use Cloudflare Tunnel (Zero Trust):**
+Bypass port forwarding entirely with Cloudflare Tunnel:
+```bash
+# On LXC, install cloudflared
+docker run -d --name cloudflared \
+  --network traefik_proxy \
+  cloudflare/cloudflared:latest \
+  tunnel --no-autoupdate run --token YOUR_TUNNEL_TOKEN
+```
+
+### Complete LXC Setup Example
+
+Here's a full example for deploying StackWiz on an LXC container:
+
+```bash
+#!/bin/bash
+# lxc-stackwiz-setup.sh
+
+# === Configuration ===
+STACK_DIR="/home/user/stacks"
+TEMPLATES_DIR="$STACK_DIR/_templates"
+CF_TOKEN="your-cloudflare-token"
+PUBLIC_IP="203.0.113.50"  # Your actual public IP for DNS
+
+# === Install Dependencies ===
+apt update && apt install -y python3-pip docker.io docker-compose-plugin
+
+# === Setup Docker ===
+systemctl enable docker
+systemctl start docker
+usermod -aG docker $USER
+
+# === Create Directory Structure ===
+mkdir -p "$TEMPLATES_DIR"
+mkdir -p "$STACK_DIR/traefik"
+
+# === Install StackWiz MCP ===
+pip install git+https://github.com/rickoslyder/stackwiz-mcp.git
+
+# === Download Templates ===
+cd "$TEMPLATES_DIR"
+curl -O https://raw.githubusercontent.com/rickoslyder/stackwiz-mcp/main/templates/stack-template.yml
+curl -O https://raw.githubusercontent.com/rickoslyder/stackwiz-mcp/main/templates/pocketbase-template.yml
+curl -O https://raw.githubusercontent.com/rickoslyder/stackwiz-mcp/main/templates/env-template
+curl -O https://raw.githubusercontent.com/rickoslyder/stackwiz-mcp/main/templates/pocketbase-env-template
+
+# === Create Docker Network ===
+docker network create traefik_proxy
+
+# === Setup Local Traefik (if not using main server's Traefik) ===
+# Uncomment if needed:
+# mkdir -p $STACK_DIR/traefik/letsencrypt
+# ... (traefik docker-compose setup)
+
+# === Configure Environment ===
+cat > /etc/profile.d/stackwiz.sh << EOF
+export STACKWIZ_BASE_DIR="$STACK_DIR"
+export STACKWIZ_TEMPLATES_DIR="$TEMPLATES_DIR"
+export STACKWIZ_DEFAULT_USER="$USER"
+export STACKWIZ_DEFAULT_GROUP="docker"
+export STACKWIZ_CF_API_TOKEN="$CF_TOKEN"
+export STACKWIZ_PUBLIC_IP="$PUBLIC_IP"
+EOF
+
+source /etc/profile.d/stackwiz.sh
+
+# === Configure MCP for Claude Code ===
+mkdir -p ~/.mcp
+cat > ~/.mcp.json << EOF
+{
+  "mcpServers": {
+    "stackwiz": {
+      "command": "stackwiz-mcp",
+      "env": {
+        "STACKWIZ_BASE_DIR": "$STACK_DIR",
+        "STACKWIZ_TEMPLATES_DIR": "$TEMPLATES_DIR",
+        "STACKWIZ_CF_API_TOKEN": "$CF_TOKEN",
+        "STACKWIZ_DEFAULT_USER": "$USER"
+      }
+    }
+  }
+}
+EOF
+
+# === Verify Installation ===
+echo "Testing StackWiz MCP..."
+python -m stackwiz_mcp --help
+
+echo "
+=== Setup Complete ===
+
+StackWiz MCP is installed and configured.
+
+Next steps:
+1. If using Proxmox: Configure port forwarding (see TECHNICAL_OVERVIEW.md)
+2. Test creating a stack: stackwiz-mcp (then use via Claude)
+3. Verify DNS records point to: $PUBLIC_IP
+
+Templates location: $TEMPLATES_DIR
+Stacks location: $STACK_DIR
+MCP config: ~/.mcp.json
+"
+```
+
+### Troubleshooting Multi-Host Issues
+
+#### Service Created But Not Accessible
+
+1. **Check port forwarding:**
+   ```bash
+   # On hypervisor
+   iptables -t nat -L PREROUTING -n -v | grep DNAT
+   ```
+
+2. **Check LXC firewall:**
+   ```bash
+   # On LXC
+   iptables -L INPUT -n
+   ufw status  # if using ufw
+   ```
+
+3. **Test connectivity chain:**
+   ```bash
+   # From external
+   curl -v https://yourdomain.com
+
+   # From hypervisor to LXC
+   curl -v http://10.0.0.100:80
+
+   # From LXC to container
+   docker exec traefik wget -qO- http://container_name:port
+   ```
+
+#### DNS Record Created With Wrong IP
+
+```bash
+# Check what IP AUTO detected
+curl -s https://api.ipify.org
+
+# If wrong, update the record manually
+cloudflare-dns update myapp $CORRECT_IP
+
+# Or delete and recreate
+cloudflare-dns delete myapp
+cloudflare-dns create A myapp $CORRECT_IP
+```
+
+#### Container Network Issues
+
+```bash
+# Verify container is on correct network
+docker inspect container_name | grep -A 10 Networks
+
+# Manually connect if needed
+docker network connect traefik_proxy container_name
+
+# Check network connectivity
+docker run --rm --network traefik_proxy alpine ping -c 2 container_name
+```
+
+---
+
 ## Support
 
 - **Repository**: https://github.com/rickoslyder/stackwiz-mcp
