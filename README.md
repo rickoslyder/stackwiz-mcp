@@ -2,19 +2,30 @@
 
 Transform your Docker infrastructure management with an AI-powered Model Context Protocol (MCP) server. StackWiz MCP enables AI assistants like Claude to create, manage, and deploy containerized services in your infrastructure programmatically.
 
+## 📖 Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [CLAUDE.md](CLAUDE.md) | Quick reference for Claude Code agents |
+| [docs/AGENT_REFERENCE.md](docs/AGENT_REFERENCE.md) | **Canonical documentation** - complete tool reference |
+| [INSTALL.md](INSTALL.md) | Installation guide for standalone deployment |
+
+**For AI Agents**: Start with `CLAUDE.md`, refer to `docs/AGENT_REFERENCE.md` for detailed tool parameters.
+
 ## 🚀 Quick Start
 
 ### Installation
 
 ```bash
-# Clone or navigate to the directory
-cd /srv/dockerdata/stackwiz-mcp
+# Install from Git (recommended)
+pip install git+https://gitea.rbnk.uk/admin/stackwiz-mcp.git
+# Or from GitHub:
+pip install git+https://github.com/rickoslyder/stackwiz-mcp.git
 
-# Install with pip
+# Or clone and install locally
+git clone https://gitea.rbnk.uk/admin/stackwiz-mcp.git
+cd stackwiz-mcp
 pip install -e .
-
-# Or run directly with Python
-python -m stackwiz_mcp
 ```
 
 ### Claude Desktop Integration
