@@ -1,0 +1,29 @@
+services:
+  __SERVICE_NAME__:
+    image: __APP_IMAGE__
+    container_name: __APP_NAME__
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    networks:
+      - default
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    # optional: expose container port to host for debugging only
+    # ports:
+    #   - "127.0.0.1:__APP_PORT__:__APP_PORT__"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.__APP_NAME__-http.rule=Host(`__APP_DOMAIN__`)"
+      - "traefik.http.routers.__APP_NAME__-http.entrypoints=web"
+      - "traefik.http.routers.__APP_NAME__-http.middlewares=redirect-to-https@file"
+      - "traefik.http.routers.__APP_NAME__.rule=Host(`__APP_DOMAIN__`)"
+      - "traefik.http.routers.__APP_NAME__.entrypoints=__TRAEFIK_ENTRYPOINT__"
+      - "traefik.http.routers.__APP_NAME__.tls.certresolver=__TRAEFIK_CERTRESOLVER__"
+      - "traefik.http.services.__APP_NAME__.loadbalancer.server.port=__APP_PORT__"
+
+networks:
+  default:
+    name: __TRAEFIK_NETWORK__
+    external: true

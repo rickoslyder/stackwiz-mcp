@@ -1,0 +1,38 @@
+services:
+  __SERVICE_NAME__:
+    image: ghcr.io/muchobien/pocketbase:latest
+    container_name: __APP_NAME__
+    restart: unless-stopped
+    command:
+      - --encryptionEnv
+      - PB_ENCRYPTION_KEY
+    environment:
+      PB_ENCRYPTION_KEY: "${PB_ENCRYPTION_KEY}"
+      GOMEMLIMIT: "${GOMEMLIMIT:-512MiB}"
+    ports:
+      - "127.0.0.1:${PB_EXTERNAL_PORT:-8090}:8080"
+    volumes:
+      - ./pb_data:/pb_data
+      - ./pb_public:/pb_public
+      - ./pb_migrations:/pb_migrations
+      - ./pb_hooks:/pb_hooks
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - __TRAEFIK_NETWORK__
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.__APP_NAME__-http.rule=Host(`__APP_DOMAIN__`)"
+      - "traefik.http.routers.__APP_NAME__-http.entrypoints=web"
+      - "traefik.http.routers.__APP_NAME__-http.middlewares=redirect-to-https@file"
+      - "traefik.http.routers.__APP_NAME__.rule=Host(`__APP_DOMAIN__`)"
+      - "traefik.http.routers.__APP_NAME__.entrypoints=__TRAEFIK_ENTRYPOINT__"
+      - "traefik.http.routers.__APP_NAME__.tls.certresolver=__TRAEFIK_CERTRESOLVER__"
+      - "traefik.http.services.__APP_NAME__.loadbalancer.server.port=8080"
+
+networks:
+  __TRAEFIK_NETWORK__:
+    external: true
