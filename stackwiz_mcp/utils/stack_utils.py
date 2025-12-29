@@ -1,5 +1,11 @@
 """
 Utility functions for stack management operations.
+
+Environment Variables (all optional with sensible defaults):
+    STACKWIZ_BASE_DIR: Base directory for stacks (default: /srv/dockerdata)
+    STACKWIZ_TEMPLATES_DIR: Templates directory (default: {base_dir}/_templates)
+    STACKWIZ_DEFAULT_USER: Default user for file ownership (default: current user or 'root')
+    STACKWIZ_DEFAULT_GROUP: Default group for file ownership (default: 'docker')
 """
 
 import os
@@ -10,14 +16,50 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import stat
 import logging
+import pwd
+import grp
 
 logger = logging.getLogger(__name__)
 
 
-BASE_DIR = "/srv/dockerdata"
-TEMPLATE_DIR = os.path.join(BASE_DIR, "_templates")
-DEFAULT_USER = "rkb"
-DEFAULT_GROUP = "docker"
+def _get_current_user() -> str:
+    """Get current username, with fallback to 'root'."""
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, AttributeError):
+        return "root"
+
+
+def _get_base_dir() -> str:
+    """Get base directory from environment or default."""
+    return os.environ.get("STACKWIZ_BASE_DIR", "/srv/dockerdata")
+
+
+def _get_template_dir() -> str:
+    """Get template directory from environment or default."""
+    explicit = os.environ.get("STACKWIZ_TEMPLATES_DIR")
+    if explicit:
+        return explicit
+    return os.path.join(_get_base_dir(), "_templates")
+
+
+def _get_default_user() -> str:
+    """Get default user from environment or current user."""
+    return os.environ.get("STACKWIZ_DEFAULT_USER", _get_current_user())
+
+
+def _get_default_group() -> str:
+    """Get default group from environment or 'docker'."""
+    return os.environ.get("STACKWIZ_DEFAULT_GROUP", "docker")
+
+
+# Dynamic properties that read from environment at runtime
+# These are functions, but we provide module-level constants for backwards compatibility
+# that are evaluated at import time (for code that imports BASE_DIR directly)
+BASE_DIR = _get_base_dir()
+TEMPLATE_DIR = _get_template_dir()
+DEFAULT_USER = _get_default_user()
+DEFAULT_GROUP = _get_default_group()
 
 # System stacks that should not be managed by users
 SYSTEM_STACKS = {
@@ -33,7 +75,7 @@ def slugify(name: str) -> str:
 
 def get_stack_path(stack_name: str) -> str:
     """Get the full path for a stack."""
-    return os.path.join(BASE_DIR, stack_name)
+    return os.path.join(_get_base_dir(), stack_name)
 
 
 def stack_exists(stack_name: str) -> bool:
@@ -85,7 +127,7 @@ def run_command(cmd: List[str], cwd: Optional[str] = None, capture_output: bool 
         return False, "", str(e)
 
 
-def run_docker_compose(stack_path: str, command: List[str], sudo_user: Optional[str] = DEFAULT_USER) -> Tuple[bool, str, str]:
+def run_docker_compose(stack_path: str, command: List[str], sudo_user: Optional[str] = None) -> Tuple[bool, str, str]:
     """
     Run a docker compose command for a stack.
     
@@ -117,7 +159,11 @@ def run_docker_compose(stack_path: str, command: List[str], sudo_user: Optional[
     # Skip sudo in container environments (MCP runs in Docker)
     # Check if we're in a container by looking for /.dockerenv
     in_container = os.path.exists("/.dockerenv") or os.environ.get("MCP_TRANSPORT") == "stdio"
-    
+
+    # Use default user if not specified
+    if sudo_user is None:
+        sudo_user = _get_default_user()
+
     # If sudo_user is specified and we're not in a container, run as that user
     if sudo_user and os.geteuid() == 0 and not in_container:  # Running as root, not in container
         cmd = ["sudo", "-u", sudo_user] + cmd
@@ -214,7 +260,7 @@ def read_env_file(stack_path: str) -> Dict[str, str]:
     return env_vars
 
 
-def fix_permissions(path: str, user: str = DEFAULT_USER, group: str = DEFAULT_GROUP):
+def fix_permissions(path: str, user: str = None, group: str = None):
     """
     Fix permissions on a directory or file.
     
@@ -234,9 +280,14 @@ def fix_permissions(path: str, user: str = DEFAULT_USER, group: str = DEFAULT_GR
         if in_container:
             logger.debug("Running in container, skipping permission changes")
             return
-            
+
+        # Use defaults from environment if not specified
+        if user is None:
+            user = _get_default_user()
+        if group is None:
+            group = _get_default_group()
+
         # Get uid and gid
-        import pwd, grp
         uid = pwd.getpwnam(user).pw_uid
         gid = grp.getgrnam(group).gr_gid
         
@@ -357,10 +408,11 @@ def list_stacks(include_system: bool = False) -> List[str]:
     List all stack directories.
     """
     stacks = []
-    
+    base_dir = _get_base_dir()
+
     try:
-        for item in os.listdir(BASE_DIR):
-            item_path = os.path.join(BASE_DIR, item)
+        for item in os.listdir(base_dir):
+            item_path = os.path.join(base_dir, item)
             
             # Skip non-directories
             if not os.path.isdir(item_path):

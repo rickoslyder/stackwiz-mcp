@@ -8,9 +8,12 @@ Transform your Docker infrastructure management with an AI-powered Model Context
 |----------|---------|
 | [CLAUDE.md](CLAUDE.md) | Quick reference for Claude Code agents |
 | [docs/AGENT_REFERENCE.md](docs/AGENT_REFERENCE.md) | **Canonical documentation** - complete tool reference |
+| [docs/TECHNICAL_OVERVIEW.md](docs/TECHNICAL_OVERVIEW.md) | Deep technical architecture & LXC deployment guide |
 | [INSTALL.md](INSTALL.md) | Installation guide for standalone deployment |
 
 **For AI Agents**: Start with `CLAUDE.md`, refer to `docs/AGENT_REFERENCE.md` for detailed tool parameters.
+
+**For DevOps/Deployment**: See `docs/TECHNICAL_OVERVIEW.md` for architecture details and environment configuration.
 
 ## 🚀 Quick Start
 

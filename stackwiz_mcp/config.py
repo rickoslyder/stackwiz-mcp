@@ -132,12 +132,33 @@ class Config(BaseSettings):
         "case_sensitive": False
     }
         
-    @field_validator("base_dir", "templates_dir", "scripts_dir")
-    def validate_paths(cls, v: Path) -> Path:
-        """Ensure paths exist"""
-        if not v.exists():
-            raise ValueError(f"Path does not exist: {v}")
+    @field_validator("base_dir", "templates_dir", "scripts_dir", mode="before")
+    def coerce_paths(cls, v) -> Path:
+        """Coerce string paths to Path objects."""
+        if isinstance(v, str):
+            return Path(v)
         return v
+
+    @model_validator(mode='after')
+    def validate_paths(self):
+        """Warn about missing paths but don't fail - allows graceful degradation."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        missing_paths = []
+        for path_name in ['base_dir', 'templates_dir', 'scripts_dir']:
+            path = getattr(self, path_name)
+            if not path.exists():
+                missing_paths.append(f"{path_name}={path}")
+                logger.warning(f"Path does not exist: {path} (set {path_name.upper()} or STACKWIZ_{path_name.upper()} to configure)")
+
+        if missing_paths:
+            logger.warning(
+                f"Some configured paths don't exist: {', '.join(missing_paths)}. "
+                "Stack operations may fail. Create the directories or set environment variables."
+            )
+
+        return self
     
     @model_validator(mode='after')
     def populate_dns_config(self):

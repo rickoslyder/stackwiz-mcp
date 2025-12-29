@@ -212,7 +212,9 @@ def get_cloudflare_api_token() -> Optional[str]:
         return token
 
     # 3. Try to read from Traefik env file as last resort
-    traefik_env = os.path.join(BASE_DIR, "traefik", ".env")
+    # Import dynamically to get runtime value, not import-time constant
+    from .utils.stack_utils import _get_base_dir
+    traefik_env = os.path.join(_get_base_dir(), "traefik", ".env")
     if os.path.exists(traefik_env):
         try:
             with open(traefik_env, 'r') as f:
@@ -563,7 +565,9 @@ async def create_stack(
             encryption_key = generate_encryption_key()
         
         # Select and render templates based on type
-        template_dir = "/srv/dockerdata/_templates"
+        # Use config-based template directory (respects STACKWIZ_TEMPLATES_DIR)
+        from .utils.stack_utils import _get_template_dir
+        template_dir = _get_template_dir()
         
         if config.type == "generic":
             # Render env file
